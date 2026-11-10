@@ -1,0 +1,5 @@
+# Tested on Python 3.12 (Windows 11), 3.11 and 3.10 also work.
+# Python 3.13: MediaPipe wheels exist from 0.10.30 onward - see docs/TROUBLESHOOTING.md
+mediapipe==0.10.21
+opencv-python==4.11.0.86
+numpy==1.26.4

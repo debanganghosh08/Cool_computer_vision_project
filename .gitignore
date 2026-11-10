@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# The hand landmark model is downloaded on first run (~7.8 MB)
+models/*.task
+
+# Output
+out/
+*.mp4
+*.mov
+*.avi
+!docs/media/*.mp4
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
