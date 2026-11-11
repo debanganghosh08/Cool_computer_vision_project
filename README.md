@@ -51,6 +51,7 @@ builds itself.
 | `pixel` 🎮 | 8-bit console |
 | `glitch` 📺 | Broken signal — channel shift, tearing, scanlines |
 | `skeleton` 🦴 | The hand tracking itself, drawn: bones, joints, lit fingertips |
+| `neon` 🌈 | You, repainted in loud pastel neon: candy gradient, drifting wash, glowing mint outlines |
 | `video:clip.mp4` 🎬 | **Your own footage** inside the portal |
 | `image:poster.png` 🖼️ | Any still image |
 
@@ -60,6 +61,7 @@ Some take an argument:
 --world storm:cyan      # magenta, cyan, amber, violet, green, red
 --world pixel:48        # chunkier pixels
 --world matrix:70       # more columns
+--world neon:ice        # cooler neon: navy, blue, cyan, mint
 --world comic:9         # bigger halftone dots
 ```
 
@@ -204,7 +206,7 @@ python tests/test_geometry.py        # no pytest needed
 python -m pytest -q                  # if you have it
 ```
 
-20 tests, all of the geometry, smoothing, masking and colour parsing, no camera and no model
+23 tests, all of the geometry, smoothing, masking and colour parsing, no camera and no model
 required. They run in under a second. ✅
 
 ---

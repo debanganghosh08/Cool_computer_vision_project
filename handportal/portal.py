@@ -72,6 +72,14 @@ class PortalConfig:
     hold_frames: int = 6
     fade_frames: int = 4
 
+    # A hand that leaves THROUGH THE EDGE of the frame (arms swung out wide) is
+    # pinned just outside that edge, so the band keeps stretching off-screen
+    # toward it instead of vanishing. Only a hand last seen within edge_margin
+    # of the border counts; a hand lost mid-frame (motion blur, a bad frame)
+    # still holds and fades as above. edge_hold_s = 0 turns it off.
+    edge_margin: float = 0.15  # fraction of width / height
+    edge_hold_s: float = 2.0
+
     # One Euro settings. Raise beta if the portal lags behind fast hands;
     # lower min_cutoff if it trembles when the hands are still.
     min_cutoff: float = 1.2
@@ -131,9 +139,43 @@ class PortalTracker:
         self._missing = 0
         self._last_portal = Portal(present=False)
         self._last_angle: float | None = None
+        self._pins: dict[str, tuple[float, float] | None] = {"left": None, "right": None}
+        self._pin_age = {"left": 0.0, "right": 0.0}
 
     def reset(self) -> None:
         self.__post_init__()
+
+    def _outside_edge(self, pt: tuple[float, float]) -> tuple[float, float] | None:
+        """Where a hand that just left through a border should be pinned, or None."""
+        x, y = pt
+        mx, my = self.config.edge_margin * self.width, self.config.edge_margin * self.height
+        out_x, out_y = 0.04 * self.width, 0.04 * self.height
+        if x < mx:
+            return (-out_x, y)
+        if x > self.width - mx:
+            return (self.width + out_x, y)
+        if y < my:
+            return (x, -out_y)
+        if y > self.height - my:
+            return (x, self.height + out_y)
+        return None
+
+    def _edge_pin(self, side: str, seen, last, dt: float):
+        """The palm to use for one side: seen, pinned outside an edge, or None."""
+        if seen is not None or self.config.edge_hold_s <= 0.0:
+            self._pins[side], self._pin_age[side] = None, 0.0
+            return seen
+        if self._pins[side] is None:
+            if last is None:
+                return None
+            self._pins[side] = self._outside_edge(last)
+            self._pin_age[side] = 0.0
+            if self._pins[side] is None:
+                return None
+        self._pin_age[side] += dt
+        if self._pin_age[side] > self.config.edge_hold_s:
+            return None
+        return self._pins[side]
 
     def _time_burst(self, t: float | None) -> float:
         c = self.config
@@ -145,6 +187,8 @@ class PortalTracker:
         time_burst = self._time_burst(t)
         left = frame.left.palm if frame.left else None
         right = frame.right.palm if frame.right else None
+        left = self._edge_pin("left", left, self._last_left, dt)
+        right = self._edge_pin("right", right, self._last_right, dt)
 
         # Count the miss against what was actually DETECTED, before any stand-in
         # is filled in. Counting it afterwards means the counter never advances,

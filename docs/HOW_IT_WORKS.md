@@ -146,6 +146,12 @@ default.
 Hands leave frame and MediaPipe drops them for a frame or two constantly. The portal keeps the
 last known position for `--hold` frames (default 6), then fades over 4 more.
 
+Unless the hand left **through the edge**. Swing your arms out wide and both hands leave the
+frame on purpose; a portal that vanishes there looks like a glitch. So a hand last seen within
+15% of a border is pinned just outside that border for up to 2 seconds, and the band keeps
+stretching off-screen toward it. A hand lost in the middle of the frame (motion blur, a bad
+frame) is not pinned, so a tracking hiccup can never freeze the portal in place.
+
 The subtle bug here, and it was in this code: the miss has to be counted against what was
 **actually detected**, before the stand-in position is filled in. Count it afterwards and the
 counter never advances, the hold window never expires, and the portal hangs on screen forever

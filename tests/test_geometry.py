@@ -170,6 +170,34 @@ def test_hold_then_fade_when_a_hand_is_lost():
     assert not gone.present
 
 
+def test_hand_leaving_through_the_edge_keeps_the_band():
+    # arms swung out wide: the right hand was last seen near the right border
+    t = PortalTracker(W, H, PortalConfig(hold_frames=5, fade_frames=4))
+    settle(t, 200, 680)
+    for _ in range(30):  # one second, far past hold_frames
+        p = t.update(Frame(left=fake_hand(200, 640), right=None), 1 / 30)
+    assert p.present and p.opacity > 0.5
+    # the band now reaches past the right edge of the frame
+    assert p.center[0] + p.half_length > W
+
+
+def test_edge_pin_expires():
+    t = PortalTracker(W, H, PortalConfig(hold_frames=5, fade_frames=4, edge_hold_s=0.5))
+    settle(t, 200, 680)
+    for _ in range(60):
+        p = t.update(Frame(left=fake_hand(200, 640), right=None), 1 / 30)
+    assert not p.present
+
+
+def test_edge_pin_releases_when_the_hand_comes_back():
+    t = PortalTracker(W, H, PortalConfig())
+    settle(t, 200, 680)
+    for _ in range(10):
+        t.update(Frame(left=fake_hand(200, 640), right=None), 1 / 30)
+    p = settle(t, 200, 520, n=60)
+    assert abs((p.center[0] + p.half_length / 1.1) - 520) < 40  # follows the real hand again
+
+
 # -- mask and colour --------------------------------------------------------
 
 

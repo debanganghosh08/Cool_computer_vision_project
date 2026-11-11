@@ -357,6 +357,92 @@ class StormWorld(World):
         return out
 
 
+class NeonWorld(World):
+    """You, repainted in loud pastel neon.
+
+    Same idea as storm - the portal shows a restyled copy of the real frame, never
+    a flat fill - but pushed bright. Brightness runs through a five-stop gradient
+    (plum, electric violet, hot pink, peach, butter yellow), a soft pastel wash
+    drifts across the frame, and the edges of everything glow mint, so a face
+    stays readable inside the colour instead of turning into a blob.
+
+    --world neon            the default palette
+    --world neon:ice        cooler: navy, blue, cyan, mint, white
+    """
+
+    name = "neon"
+
+    # gradient stops from dark to light, as hex RGB
+    PALETTES = {
+        "candy": ["#1b0638", "#6a1bd6", "#ff3fa4", "#ffad7a", "#fff2a6"],
+        "ice": ["#06102e", "#1d4fd8", "#22c6ff", "#7dffd6", "#f4fffd"],
+    }
+    WASH = {"candy": ["#ff8fd1", "#9dfde0", "#c8a6ff"], "ice": ["#8fd8ff", "#c2b5ff", "#9dffe9"]}
+    LINE = {"candy": "#9dffe9", "ice": "#ffffff"}
+
+    def __init__(self, palette: str = "candy") -> None:
+        self.palette = palette if palette in self.PALETTES else "candy"
+        self._clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+        self._lut: np.ndarray | None = None
+        self._wash: np.ndarray | None = None
+        self._wash_for: tuple[int, int] | None = None
+
+    @staticmethod
+    def _bgr(hex_rgb: str) -> np.ndarray:
+        h = hex_rgb.lstrip("#")
+        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+        return np.array([b, g, r], dtype=np.float32)
+
+    def _get_lut(self) -> np.ndarray:
+        if self._lut is None:
+            stops = [self._bgr(c) for c in self.PALETTES[self.palette]]
+            pos = np.linspace(0.0, 1.0, len(stops))
+            x = np.linspace(0.0, 1.0, 256)
+            table = np.stack([np.interp(x, pos, [c[k] for c in stops]) for k in range(3)], axis=1)
+            self._lut = np.clip(table, 0, 255).astype(np.uint8).reshape(256, 1, 3)
+        return self._lut
+
+    def _get_wash(self, size: tuple[int, int]) -> np.ndarray:
+        """A diagonal three-colour wash, twice the frame size, so it can slide."""
+        if self._wash is None or self._wash_for != size:
+            h, w = size
+            H, W = 2 * h, 2 * w
+            yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+            t = ((xx / W) * 0.6 + (yy / H) * 0.4) * 2.0  # 0..2, two full sweeps
+            t = (np.sin(t * math.pi) + 1.0) * 0.5  # smooth back-and-forth, no seam
+            c = [self._bgr(x) for x in self.WASH[self.palette]]
+            a = np.clip(t * 2.0, 0, 1)[..., None]
+            b = np.clip(t * 2.0 - 1.0, 0, 1)[..., None]
+            img = c[0] * (1 - a) + c[1] * a
+            img = img * (1 - b) + c[2] * b
+            self._wash = np.clip(img, 0, 255).astype(np.uint8)
+            self._wash_for = size
+        return self._wash
+
+    def render(self, ctx: WorldContext) -> np.ndarray:
+        h, w = ctx.size
+        gray = self._clahe.apply(cv2.cvtColor(ctx.frame, cv2.COLOR_BGR2GRAY))
+        base = cv2.LUT(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), self._get_lut())
+
+        # drifting pastel wash, laid over with a screen-like lift
+        wash = self._get_wash((h, w))
+        ox = int((math.sin(ctx.time * 0.35) * 0.5 + 0.5) * (w - 1))
+        oy = int((math.cos(ctx.time * 0.27) * 0.5 + 0.5) * (h - 1))
+        base = cv2.addWeighted(base, 0.74, wash[oy:oy + h, ox:ox + w], 0.26, 0)
+
+        # glowing outlines
+        edges = cv2.Canny(cv2.GaussianBlur(gray, (0, 0), 2.0), 40, 110)
+        edges = cv2.dilate(edges, np.ones((2, 2), np.uint8))
+        glow = soft_blur(edges, 6.0)
+        line = self._bgr(self.LINE[self.palette])
+        e3 = cv2.merge([edges, edges, edges])
+        g3 = cv2.merge([glow, glow, glow])
+        colour = np.full_like(base, line.astype(np.uint8))
+        base = cv2.add(base, cv2.multiply(colour, g3, scale=1.4 / 255.0))
+        base = cv2.add(base, cv2.multiply(colour, e3, scale=0.9 / 255.0))
+        return base
+
+
 class SkeletonWorld(World):
     """The tracking itself, drawn: bones, joints, lit fingertips, on a dark frame."""
 
@@ -446,6 +532,7 @@ BUILTIN = {
     "pixel": PixelWorld,
     "glitch": GlitchWorld,
     "skeleton": SkeletonWorld,
+    "neon": NeonWorld,
 }
 
 
@@ -466,6 +553,8 @@ def build_world(spec: str) -> World:
         return cls()
     if cls is StormWorld:
         return StormWorld(hue=arg)
+    if cls is NeonWorld:
+        return NeonWorld(palette=arg)
     if cls is MatrixWorld:
         return MatrixWorld(cols=int(arg))
     if cls is PixelWorld:
