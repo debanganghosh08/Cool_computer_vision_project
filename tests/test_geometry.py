@@ -170,9 +170,132 @@ def test_hold_then_fade_when_a_hand_is_lost():
     assert not gone.present
 
 
-def test_hand_leaving_through_the_edge_keeps_the_band():
-    # arms swung out wide: the right hand was last seen near the right border
+def tip_hand(palm_x, palm_y, index, thumb):
+    """A hand whose index tip and thumb tip are at given points."""
+    h = fake_hand(palm_x, palm_y)
+    h.points[8] = index
+    h.points[4] = thumb
+    return h
+
+
+def tip_frame(lx, rx, y=640.0):
+    # director's frame: index tips up and inward, thumb tips below them
+    left = tip_hand(lx, y, (lx + 60, y - 80), (lx + 70, y + 20))
+    right = tip_hand(rx, y, (rx - 60, y - 70), (rx - 70, y + 25))
+    return Frame(left=left, right=right)
+
+
+def test_fingertip_box_starts_at_the_fingertips():
+    t = PortalTracker(W, H, PortalConfig())
+    for i in range(40):
+        p = t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    q = p.corners()
+    want = np.array([[210, 560], [510, 570], [500, 665], [220, 660]], dtype=np.float32)
+    assert np.abs(q - want).max() < 1.0, q
+
+
+def test_fingertip_box_is_a_sliver_when_tips_touch():
+    t = PortalTracker(W, H, PortalConfig())
+    f = Frame(left=tip_hand(300, 640, (355, 600), (355, 630)), right=tip_hand(420, 640, (365, 600), (365, 630)))
+    for i in range(40):
+        p = t.update(f, 1 / 30, t=i / 30)
+    q = p.corners()
+    assert np.linalg.norm(q[1] - q[0]) < 12 and np.linalg.norm(q[2] - q[3]) < 12
+
+
+def test_fingertip_box_never_folds_into_a_bow_tie():
+    # thumbs ABOVE index tips on one side must still give top-then-bottom corners
+    t = PortalTracker(W, H, PortalConfig())
+    f = Frame(left=tip_hand(150, 640, (220, 680), (210, 580)), right=tip_hand(570, 640, (500, 580), (510, 680)))
+    for i in range(30):
+        p = t.update(f, 1 / 30, t=i / 30)
+    q = p.corners()
+    assert q[0][1] < q[3][1] and q[1][1] < q[2][1]
+
+
+def test_fingertip_corner_keeps_up_with_a_moving_finger():
+    t = PortalTracker(W, H, PortalConfig())
+    for i in range(40):
+        p = t.update(tip_frame(150 + i * 4, 570), 1 / 30, t=i / 30)  # left hand slides 4 px a frame
+    assert abs(p.corners()[0][0] - (150 + 39 * 4 + 60)) < 6
+
+
+def test_fingertip_reveal_covers_the_whole_frame():
+    t = PortalTracker(W, H, PortalConfig(reveal_at=1.0, reveal_over=0.5))
+    for i in range(60):
+        p = t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    m = portal_mask(p, (H, W), feather=0)
+    assert m.min() > 0.99
+
+
+def test_palms_anchor_still_available():
+    t = PortalTracker(W, H, PortalConfig(anchor="palms"))
+    for i in range(40):
+        p = t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    assert p.quad is None and p.half_length > 210
+
+
+def test_fast_exit_fades_the_whole_box_instead_of_freezing_half():
+    t = PortalTracker(W, H, PortalConfig(hold_frames=6, fade_frames=4))
+    for i in range(30):
+        last = t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    t.update(tip_frame(150, 640), 1 / 30, t=30 / 30)  # right hand swings out: 70 px in one frame
+    before = t.update(tip_frame(150, 700), 1 / 30, t=31 / 30)
+    gone = t.update(Frame(left=tip_hand(120, 640, (180, 560), (190, 660)), right=None), 1 / 30, t=32 / 30)
+    assert gone.opacity < before.opacity  # fading at once, no hold
+    assert np.allclose(gone.corners(), before.corners())  # the last whole box, not a wedge
+
+
+def test_hand_mostly_outside_the_frame_is_not_a_corner():
+    t = PortalTracker(W, H, PortalConfig(hold_frames=6, fade_frames=4))
+    for i in range(30):
+        before = t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    leaving = tip_hand(700, 640, (690, 900), (650, 700))  # tips are guesses
+    leaving.points[:12, 0] = W + 50  # 12 of 21 landmarks past the right edge
+    p = t.update(Frame(left=tip_hand(150, 640, (210, 560), (220, 660)), right=leaving), 1 / 30, t=1.0)
+    assert p.opacity < before.opacity  # fading
+    assert np.allclose(p.corners(), before.corners())  # the guessed tip never became a corner
+
+
+def test_corners_start_fresh_after_the_box_was_gone():
+    t = PortalTracker(W, H, PortalConfig(hold_frames=2, fade_frames=2))
+    for i in range(30):
+        t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    for i in range(10):
+        t.update(Frame(None, None), 1 / 30, t=(30 + i) / 30)
+    p = t.update(tip_frame(100, 520, y=900), 1 / 30, t=41 / 30)  # hands come back somewhere else
+    assert abs(p.corners()[0][0] - 160) < 1 and abs(p.corners()[0][1] - 820) < 1
+
+
+def test_slow_hand_that_blinks_out_is_still_held():
+    t = PortalTracker(W, H, PortalConfig(hold_frames=6, fade_frames=4))
+    for i in range(30):
+        t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    held = t.update(Frame(left=tip_hand(150, 640, (210, 560), (220, 660)), right=None), 1 / 30, t=1.0)
+    assert held.opacity > 0.99
+
+
+def test_box_fades_in_when_it_comes_back():
+    t = PortalTracker(W, H, PortalConfig())
+    first = t.update(tip_frame(150, 570), 1 / 30, t=0.0)
+    assert 0.0 < first.opacity < 0.5
+    for i in range(1, 6):
+        p = t.update(tip_frame(150, 570), 1 / 30, t=i / 30)
+    assert p.opacity > 0.99
+
+
+def test_fingertip_box_fades_when_a_hand_leaves_the_frame():
     t = PortalTracker(W, H, PortalConfig(hold_frames=5, fade_frames=4))
+    for i in range(40):
+        t.update(tip_frame(150, 680), 1 / 30, t=i / 30)
+    for _ in range(30):
+        p = t.update(Frame(left=fake_hand(150, 640), right=None), 1 / 30)
+    assert not p.present
+
+
+def test_hand_leaving_through_the_edge_keeps_the_band():
+    # palms anchor, arms swung out wide: the right hand was last seen near the right border
+    t = PortalTracker(W, H, PortalConfig(hold_frames=5, fade_frames=4, anchor="palms"))
     settle(t, 200, 680)
     for _ in range(30):  # one second, far past hold_frames
         p = t.update(Frame(left=fake_hand(200, 640), right=None), 1 / 30)
@@ -182,7 +305,7 @@ def test_hand_leaving_through_the_edge_keeps_the_band():
 
 
 def test_edge_pin_expires():
-    t = PortalTracker(W, H, PortalConfig(hold_frames=5, fade_frames=4, edge_hold_s=0.5))
+    t = PortalTracker(W, H, PortalConfig(hold_frames=5, fade_frames=4, edge_hold_s=0.5, anchor="palms"))
     settle(t, 200, 680)
     for _ in range(60):
         p = t.update(Frame(left=fake_hand(200, 640), right=None), 1 / 30)
@@ -190,7 +313,7 @@ def test_edge_pin_expires():
 
 
 def test_edge_pin_releases_when_the_hand_comes_back():
-    t = PortalTracker(W, H, PortalConfig())
+    t = PortalTracker(W, H, PortalConfig(anchor="palms"))
     settle(t, 200, 680)
     for _ in range(10):
         t.update(Frame(left=fake_hand(200, 640), right=None), 1 / 30)

@@ -13,7 +13,7 @@ Everything is computed in pixels and every value is smoothed before use.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -72,13 +72,42 @@ class PortalConfig:
     hold_frames: int = 6
     fade_frames: int = 4
 
-    # A hand that leaves THROUGH THE EDGE of the frame (arms swung out wide) is
-    # pinned just outside that edge, so the band keeps stretching off-screen
+    # Palms anchor only. A hand that leaves THROUGH THE EDGE of the frame (arms
+    # swung out wide) is pinned just outside that edge, so the band keeps stretching off-screen
     # toward it instead of vanishing. Only a hand last seen within edge_margin
     # of the border counts; a hand lost mid-frame (motion blur, a bad frame)
     # still holds and fades as above. edge_hold_s = 0 turns it off.
     edge_margin: float = 0.15  # fraction of width / height
     edge_hold_s: float = 2.0
+
+    # What the portal is pinned to.
+    #   "fingertips" (default): a four-cornered box BETWEEN the hands. Its corners
+    #       are each hand's index tip and thumb tip, so it starts exactly at the
+    #       fingertips, is a sliver when they touch, and opens as they part. This
+    #       is the "director's frame" look.
+    #   "palms": the older look, a rotated band through both palm centres that
+    #       runs past them by `overhang` and covers the hands.
+    anchor: str = "fingertips"
+    # Fingertips move much faster than palms. Measured on real footage, the palm
+    # settings (1.2 / 0.02) left a corner 13 px behind a moving fingertip on
+    # average (25 px at p95); 1.0 / 0.2 gets that to 2 px (5 px p95) while still
+    # shaking less than the raw landmarks do.
+    tip_min_cutoff: float = 1.0
+    tip_beta: float = 0.2
+    # A hand lost while its fingertips were moving faster than this (fraction of
+    # the frame width per second) has LEFT the shot, it did not blink. Holding its
+    # last corners while the other hand keeps moving bent the box into a wedge on
+    # real footage (an arm swung out at 85 px a frame), so the whole last box fades
+    # instead. Slow hands that drop out for a frame still get hold_frames.
+    fast_exit: float = 0.6
+    # Frames to fade the portal in when it comes back after being gone.
+    appear_frames: int = 4
+    # A hand with at least this share of its 21 landmarks outside the frame is
+    # leaving, and its fingertips are guesses: on real footage MediaPipe moved an
+    # off-screen index tip 170 px in one frame (16 of 21 points outside). In the
+    # fingertip anchor such a hand counts as gone, and the box fades from the last
+    # frame where both hands were really in shot.
+    max_outside: float = 0.5
 
     # One Euro settings. Raise beta if the portal lags behind fast hands;
     # lower min_cutoff if it trembles when the hands are still.
@@ -102,9 +131,15 @@ class Portal:
     half_thickness: float = 0.0  # across it
     opacity: float = 0.0  # 0..1
     openness: float = 0.0  # 0 = slit, 1 = fully spread
+    # Fingertip anchor: the four corners [left top, right top, right bottom,
+    # left bottom]. When set it IS the portal's shape; the fields above still
+    # describe the hands (centre, angle, spread) for opacity and the reveal.
+    quad: np.ndarray | None = None
 
     def corners(self) -> np.ndarray:
         """Four corners, clockwise, as float32 (4, 2)."""
+        if self.quad is not None:
+            return np.asarray(self.quad, dtype=np.float32)
         ca, sa = math.cos(self.angle), math.sin(self.angle)
         ux, uy = ca, sa  # along the axis
         vx, vy = -sa, ca  # across it
@@ -141,6 +176,15 @@ class PortalTracker:
         self._last_angle: float | None = None
         self._pins: dict[str, tuple[float, float] | None] = {"left": None, "right": None}
         self._pin_age = {"left": 0.0, "right": 0.0}
+        # Fingertip anchor: one filter per LABELLED tip (L index, L thumb, R index,
+        # R thumb), smoothed before deciding which is top or bottom, so a swap can
+        # never smear a corner across the box.
+        self._f_tips = [OneEuroPoint(c.tip_min_cutoff, c.tip_beta) for _ in range(4)]
+        self._tips: dict[str, np.ndarray | None] = {"left": None, "right": None}
+        self._tips_palm: dict[str, tuple[float, float] | None] = {"left": None, "right": None}
+        self._tip_speed = {"left": 0.0, "right": 0.0}  # frame widths per second, last seen
+        self._hold = c.hold_frames
+        self._ramp = 0.0
 
     def reset(self) -> None:
         self.__post_init__()
@@ -185,10 +229,18 @@ class PortalTracker:
 
     def update(self, frame: Frame, dt: float, t: float | None = None) -> Portal:
         time_burst = self._time_burst(t)
+        self._last_dt = dt
+        if self.config.anchor == "fingertips":
+            frame = Frame(left=self._usable(frame.left, "left"), right=self._usable(frame.right, "right"))
         left = frame.left.palm if frame.left else None
         right = frame.right.palm if frame.right else None
-        left = self._edge_pin("left", left, self._last_left, dt)
-        right = self._edge_pin("right", right, self._last_right, dt)
+        # Edge hold is for the palms anchor. With fingertip corners, a hand that has
+        # left the frame has no fingertips left to pin a corner to: pinning it bent
+        # the box into a wedge (measured on real footage), so the box fades instead
+        # and comes back the moment the hands do.
+        if self.config.anchor == "palms":
+            left = self._edge_pin("left", left, self._last_left, dt)
+            right = self._edge_pin("right", right, self._last_right, dt)
 
         # Count the miss against what was actually DETECTED, before any stand-in
         # is filled in. Counting it afterwards means the counter never advances,
@@ -202,7 +254,12 @@ class PortalTracker:
         # A hand that blinks out for a few frames keeps its last position, so the
         # portal does not pop. Past hold_frames it fades away instead - unless a
         # timed reveal is running, which must survive the hands leaving the shot.
-        stand_in = self._missing <= self.config.hold_frames or time_burst > 0.0
+        self._hold = self.config.hold_frames
+        if self.config.anchor == "fingertips" and self._missing > 0:
+            for side, seen in (("left", left), ("right", right)):
+                if seen is None and self._tip_speed[side] > self.config.fast_exit:
+                    self._hold = 0
+        stand_in = self._missing <= self._hold or time_burst > 0.0
         if stand_in:
             if left is None:
                 left = self._last_left
@@ -213,6 +270,8 @@ class PortalTracker:
             return self._fade_out()
 
         self._last_left, self._last_right = left, right
+        tips_l = self._tips_for("left", frame.left, left)
+        tips_r = self._tips_for("right", frame.right, right)
 
         cx, cy = (left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0
         dx, dy = right[0] - left[0], right[1] - left[1]
@@ -250,7 +309,14 @@ class PortalTracker:
             self.config.appear_at + self.config.appear_over,
             spread_n,
         )
-        opacity = max(opacity, burst)
+        self._ramp = min(1.0, self._ramp + 1.0 / max(self.config.appear_frames, 1))
+        opacity = max(opacity * self._ramp, burst)
+
+        quad = None
+        if self.config.anchor == "fingertips" and tips_l is not None and tips_r is not None:
+            quad = self._fingertip_quad(tips_l, tips_r, dt)
+            if burst > 0.0:
+                quad = self._grow_to_frame(quad, burst)
 
         self._last_portal = Portal(
             present=opacity > 0.001,
@@ -260,8 +326,71 @@ class PortalTracker:
             half_thickness=half_thickness,
             opacity=opacity,
             openness=openness,
+            quad=quad,
         )
         return self._last_portal
+
+    # -- fingertip anchor --------------------------------------------------
+    def _usable(self, hand, side: str):
+        """None for a hand that is mostly outside the frame; it is leaving, so no hold either."""
+        if hand is None:
+            return None
+        pts = np.asarray(hand.points, dtype=np.float32)
+        outside = (pts[:, 0] < 0) | (pts[:, 0] > self.width - 1) | (pts[:, 1] < 0) | (pts[:, 1] > self.height - 1)
+        if float(outside.mean()) >= self.config.max_outside:
+            self._tip_speed[side] = float("inf")
+            return None
+        return hand
+
+    def _tips_for(self, side: str, hand, palm_used) -> np.ndarray | None:
+        """(index tip, thumb tip) for one side: seen now, or carried along with a held or pinned palm."""
+        if hand is not None:
+            tips = np.asarray(hand.points, dtype=np.float32)[[8, 4]].copy()
+            prev = self._tips[side]
+            if prev is not None and self._tips_palm[side] is not None:
+                step = float(np.max(np.linalg.norm(tips - prev, axis=1)))
+                self._tip_speed[side] = step / max(self._last_dt, 1e-3) / max(self.width, 1)
+            self._tips[side] = tips
+            self._tips_palm[side] = hand.palm
+            return self._tips[side]
+        last, last_palm = self._tips[side], self._tips_palm[side]
+        if last is None or last_palm is None or palm_used is None:
+            return None
+        # a held or edge-pinned hand moves its fingertips by the same offset as its palm
+        shift = np.array([palm_used[0] - last_palm[0], palm_used[1] - last_palm[1]], dtype=np.float32)
+        return last + shift
+
+    def _fingertip_quad(self, tips_l: np.ndarray, tips_r: np.ndarray, dt: float) -> np.ndarray:
+        raw = [tips_l[0], tips_l[1], tips_r[0], tips_r[1]]
+        sm = [np.array(f((float(p[0]), float(p[1])), dt), dtype=np.float32) for f, p in zip(self._f_tips, raw)]
+        li, lt, ri, rt = sm
+        # "top" is the tip further against the normal of the left-to-right axis, so
+        # the box never folds into a bow-tie, whatever the rotation of the hands
+        ax = (ri + rt) / 2.0 - (li + lt) / 2.0
+        n = float(np.hypot(ax[0], ax[1]))
+        ux, uy = (float(ax[0]) / n, float(ax[1]) / n) if n > 1e-3 else (1.0, 0.0)
+        vx, vy = -uy, ux
+
+        def up(p):
+            return float(p[0]) * vx + float(p[1]) * vy
+
+        l_top, l_bot = (li, lt) if up(li) <= up(lt) else (lt, li)
+        r_top, r_bot = (ri, rt) if up(ri) <= up(rt) else (rt, ri)
+        return np.stack([l_top, r_top, r_bot, l_bot]).astype(np.float32)
+
+    def _grow_to_frame(self, quad: np.ndarray, burst: float) -> np.ndarray:
+        """Final reveal: each corner travels out to a box far bigger than the frame."""
+        c = quad.mean(axis=0)
+        top = quad[1] - quad[0]
+        ang = math.atan2(float(top[1]), float(top[0])) if float(np.hypot(top[0], top[1])) > 1e-3 else 0.0
+        big = Portal(
+            present=True,
+            center=(float(c[0]), float(c[1])),
+            angle=ang,
+            half_length=math.hypot(self.width, self.height) * 0.75,
+            half_thickness=self.config.thickness_full * self.height * 0.5,
+        ).corners()
+        return (quad * (1.0 - burst) + big * burst).astype(np.float32)
 
     # -- internals ---------------------------------------------------------
     def _limit_spin(self, angle: float, dt: float) -> float:
@@ -276,22 +405,20 @@ class PortalTracker:
         return self._last_angle
 
     def _fade_out(self) -> Portal:
-        over = self._missing - self.config.hold_frames
+        over = self._missing - self._hold
         if over <= 0:
             return self._last_portal
         k = 1.0 - over / max(self.config.fade_frames, 1)
         if k <= 0.0:
+            self._ramp = 0.0
+            self._tips = {"left": None, "right": None}
+            self._tips_palm = {"left": None, "right": None}
+            self._tip_speed = {"left": 0.0, "right": 0.0}
+            for f in self._f_tips:
+                f.reset()  # otherwise the corners start from where the fingertips were before
             self._last_left = self._last_right = None
             self._last_portal = Portal(present=False)
             return self._last_portal
         p = self._last_portal
-        self._last_portal = Portal(
-            present=True,
-            center=p.center,
-            angle=p.angle,
-            half_length=p.half_length,
-            half_thickness=p.half_thickness,
-            opacity=p.opacity * k,
-            openness=p.openness,
-        )
+        self._last_portal = replace(p, present=True, opacity=p.opacity * k)
         return self._last_portal

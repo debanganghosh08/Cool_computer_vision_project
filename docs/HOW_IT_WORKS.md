@@ -120,6 +120,35 @@ thickness       = thickness_min + (thickness_max − thickness_min) × openness
 `smoothstep` rather than a straight line, so the band eases in and out instead of changing at a
 constant rate — the difference between a mechanism and a move.
 
+### 📐 Wrong answer #5: pinning the box to the palms
+
+The first version ran a band through both palm centres and let it reach 10% past them. It
+looked fine in a still and wrong in a real clip: the band sat ON the hands, covered them, and
+poked out past the fingertips. The effect people expect is a box BETWEEN the hands, the
+"director's frame" you make with your index fingers and thumbs.
+
+So the default anchor is now the fingertips. Each hand gives two corners, its index tip
+(landmark 8) and its thumb tip (landmark 4). The box is left index → right index → right thumb →
+left thumb. When your fingertips touch it is a sliver; as they part it opens, and its corners
+are your fingertips. Three things it needed, all found on real footage:
+
+- **Faster smoothing.** Fingertips move far faster than palms. The palm settings
+  (min_cutoff 1.2, beta 0.02) left a corner 13 px behind a moving fingertip on average and 25 px
+  at worst. Grid-tested on real clips, 1.0 / 0.2 gets that to about 2 px (under 5 px at p95),
+  and still shakes less than the raw landmarks do.
+- **Top and bottom decided per frame, after smoothing.** The four labelled tips are smoothed
+  first, then each hand's upper tip (against the normal of the left-to-right axis) becomes a top
+  corner. The box can never fold into a bow-tie, however the hands rotate.
+- **No guessing at the edge of the frame.** A hand that is half or more outside the frame still
+  gets landmarks, but the off-screen ones are guesses: one index tip jumped 170 px in a single
+  frame. Such a hand no longer counts. If a hand leaves fast, the whole last good box fades over
+  a few frames instead of half of it freezing while the other half follows the other hand (that
+  made a wedge). A slow hand that drops out for a frame still gets the usual hold. When the box
+  comes back it fades in, and its corner filters start fresh.
+
+Measured on a 15 s clip after all of this: every corner within 10 px of the real fingertip,
+1.6 px on average. `--anchor palms` keeps the old band.
+
 ### ⏱️ Wrong answer #4: triggering the full reveal on hand spread
 
 This one only shows up on real footage. The natural ending is the portal swallowing the frame,
@@ -146,11 +175,15 @@ default.
 Hands leave frame and MediaPipe drops them for a frame or two constantly. The portal keeps the
 last known position for `--hold` frames (default 6), then fades over 4 more.
 
-Unless the hand left **through the edge**. Swing your arms out wide and both hands leave the
+With `--anchor palms`, unless the hand left **through the edge**. Swing your arms out wide and both hands leave the
 frame on purpose; a portal that vanishes there looks like a glitch. So a hand last seen within
 15% of a border is pinned just outside that border for up to 2 seconds, and the band keeps
 stretching off-screen toward it. A hand lost in the middle of the frame (motion blur, a bad
 frame) is not pinned, so a tracking hiccup can never freeze the portal in place.
+
+The default fingertip box does not do this. Its corners ARE the fingertips; once a hand has
+left the frame there is nothing to pin a corner to, and pinning anyway bent the box into a
+wedge. So it fades out, and comes back the moment the hands are back in shot.
 
 The subtle bug here, and it was in this code: the miss has to be counted against what was
 **actually detected**, before the stand-in position is filled in. Count it afterwards and the

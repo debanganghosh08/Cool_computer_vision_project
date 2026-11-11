@@ -76,6 +76,13 @@ def build_parser() -> argparse.ArgumentParser:
     shape.add_argument("--spread-closed", type=float, default=0.22, help="hand distance that counts as closed, as a fraction of width")
     shape.add_argument("--spread-wide", type=float, default=0.80, help="hand distance that counts as fully open")
     shape.add_argument("--spread-full", type=float, default=0.0, help="hand distance that triggers the full-frame reveal (0 = never, see docs)")
+    shape.add_argument(
+        "--anchor",
+        choices=["fingertips", "palms"],
+        default="fingertips",
+        help="fingertips: a box between the hands, cornered on index and thumb tips (default); "
+        "palms: a band through the palm centres that covers the hands",
+    )
     shape.add_argument("--overhang", type=float, default=0.10, help="how far past each palm the portal reaches")
     shape.add_argument("--hold", type=int, default=6, help="frames to keep the portal alive after a hand is lost")
 
@@ -140,6 +147,7 @@ def run(argv: list[str] | None = None) -> int:
         spread_closed=args.spread_closed,
         spread_wide=args.spread_wide,
         spread_full=args.spread_full,
+        anchor=args.anchor,
         reveal_at=args.reveal_at,
         reveal_over=args.reveal_over,
         hold_frames=args.hold,

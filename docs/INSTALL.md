@@ -148,7 +148,7 @@ Skip the step entirely with `--no-audio`.
 python tests/test_geometry.py
 ```
 
-23 tests, about a second, and they need neither a camera nor the model. If those pass, the maths
+35 tests, about a second, and they need neither a camera nor the model. If those pass, the maths
 is fine and anything still wrong is a camera, a codec, or a path.
 
 Then the real thing:

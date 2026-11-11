@@ -87,7 +87,7 @@ def portal_mask_u8(portal: Portal, size: tuple[int, int], feather: int = 7) -> n
     mask = np.zeros((h, w), dtype=np.uint8)
     if not portal.present or portal.half_length <= 0.5 or portal.half_thickness <= 0.5:
         return mask
-    cv2.fillConvexPoly(mask, portal.corners().astype(np.int32), 255, lineType=cv2.LINE_AA)
+    cv2.fillPoly(mask, [np.round(portal.corners()).astype(np.int32)], 255, lineType=cv2.LINE_AA)
     if feather > 0:
         mask = soft_blur(mask, feather * 0.8)
     if portal.opacity < 1.0:
@@ -114,6 +114,24 @@ def _solid(size: tuple[int, int], color: tuple[int, int, int]) -> np.ndarray:
     return got
 
 
+def _lightning_on_edges(q, color, rng, amount, layer):
+    """Bolts along the top (q0 to q1) and bottom (q3 to q2) edges of a four-corner portal."""
+    width = float(np.linalg.norm((q[0] + q[1]) / 2 - (q[3] + q[2]) / 2))
+    if width < 12 or float(np.linalg.norm(q[1] - q[0])) < 40:
+        return layer
+    for _ in range(max(1, int(round(3 * amount)))):
+        a, b = (q[0], q[1]) if rng.random() < 0.5 else (q[3], q[2])
+        d = b - a
+        n = np.array([-d[1], d[0]], dtype=np.float32) / max(float(np.linalg.norm(d)), 1.0)
+        start = rng.uniform(0.0, 0.6)
+        length = rng.uniform(0.2, 0.5)
+        pts = [a + d * min(1.0, start + length * i / 14) + n * rng.normal(0.0, width * 0.07) for i in range(15)]
+        poly = np.round(np.array(pts)).astype(np.int32)
+        cv2.polylines(layer, [poly], False, color, thickness=2, lineType=cv2.LINE_AA)
+        cv2.polylines(layer, [poly], False, (255, 255, 255), thickness=1, lineType=cv2.LINE_AA)
+    return cv2.GaussianBlur(layer, (0, 0), 3.0)
+
+
 def _lightning_overlay(
     portal: Portal,
     size: tuple[int, int],
@@ -124,6 +142,8 @@ def _lightning_overlay(
     """Jagged bolts crawling along the two long edges of the portal."""
     h, w = size
     layer = np.zeros((h, w, 3), dtype=np.uint8)
+    if portal.quad is not None:
+        return _lightning_on_edges(portal.corners(), color, rng, amount, layer)
     if portal.half_length < 20 or portal.half_thickness < 6:
         return layer
     ca, sa = math.cos(portal.angle), math.sin(portal.angle)

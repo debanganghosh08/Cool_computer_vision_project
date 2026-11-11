@@ -23,9 +23,9 @@ That is it. Webcam on, hands up, portal open.
 | Step | What happens |
 |---|---|
 | 1️⃣ | **MediaPipe** finds 21 landmarks on each of your hands, every frame |
-| 2️⃣ | The **palm centre** of each hand becomes one anchor point |
-| 3️⃣ | A **One Euro filter** smooths both points — no jitter when still, no lag when fast |
-| 4️⃣ | A **rotated rectangle** is built between them: it tilts, stretches and thickens with your hands |
+| 2️⃣ | Each hand gives two corners: its **index fingertip** and its **thumb tip** |
+| 3️⃣ | A **One Euro filter** smooths all four corners — no jitter when still, no lag when fast |
+| 4️⃣ | A **box is built between your hands**, cornered on those four fingertips: a sliver when they touch, wide open when you pull apart |
 | 5️⃣ | That rectangle becomes an **alpha mask** |
 | 6️⃣ | A **world** is rendered — a restyled version of your own frame |
 | 7️⃣ | The two are **composited** through the mask, with a glowing rim and crawling bolts ⚡ |
@@ -129,7 +129,9 @@ Now the portal is a *tool*, not a filter. 🛠️
 --glow / --glow-width / --rim    the edge treatment
 --mirror            flip left-right, for selfie view
 
---thickness-min     how thin the band is when your hands are together  (default 0.04)
+--anchor            fingertips (default): a box between your hands, cornered on index + thumb tips
+                    palms: the older band through both palm centres
+--thickness-min     (palms) how thin the band is when your hands are together  (default 0.04)
 --thickness-max     how thick when they are wide                       (default 0.17)
 --spread-closed     hand distance that counts as "closed"              (default 0.22)
 --spread-wide       hand distance that counts as "open"                (default 0.80)
@@ -206,7 +208,7 @@ python tests/test_geometry.py        # no pytest needed
 python -m pytest -q                  # if you have it
 ```
 
-23 tests, all of the geometry, smoothing, masking and colour parsing, no camera and no model
+35 tests, all of the geometry, smoothing, masking and colour parsing, no camera and no model
 required. They run in under a second. ✅
 
 ---
