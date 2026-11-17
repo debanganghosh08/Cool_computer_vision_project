@@ -2,6 +2,10 @@
 
 **Open a portal between your two hands. Whatever is inside comes from another world.** 🔥
 
+<p align="center">
+  <img src="docs/media/handportal_demo.gif" alt="HandPortal demo: a neon portal opening between two tracked hands" width="720">
+</p>
+
 You have seen the edit. Someone holds their hands up, pulls them apart, and a glowing slab
 opens across the frame — and through that slab they are somewhere else. Everyone assumes it
 is an app, a template, or an AI video generator. ❄️
@@ -15,6 +19,24 @@ python -m handportal --input 0 --preview
 ```
 
 That is it. Webcam on, hands up, portal open.
+
+---
+
+## 📸 See it on a real take
+
+One phone, one take, CPU only. The box is cornered on the index and thumb tips of both hands,
+and the `neon` world inside it is built from the same frame. The white skeleton on top is the
+42 MediaPipe landmarks (21 per hand) the portal is driven by.
+
+| 1️⃣ Fingertips touch, the portal is a sliver | 2️⃣ Pull apart, it opens | 3️⃣ Tilt, it follows |
+|---|---|---|
+| ![Hands together, portal just opening](docs/media/demo_1.jpg) | ![Portal wide open between both hands](docs/media/demo_2.jpg) | ![Portal tilted with the hands](docs/media/demo_3.jpg) |
+
+```bash
+python -m handportal -i my_project.mp4 -w neon -o out/portal.mp4
+```
+
+On this take: corners within 1.5 px of the fingertips on average, both hands found in 97 % of frames.
 
 ---
 
