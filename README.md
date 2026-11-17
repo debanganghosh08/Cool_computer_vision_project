@@ -2,6 +2,8 @@
 
 **Open a portal between your two hands. Whatever is inside comes from another world.** 🔥
 
+<br>Follow - [Ig](https://www.instagram.com/primus.builds/) 💫
+
 <p align="center">
   <img src="docs/media/handportal_demo.gif" alt="HandPortal demo: a neon portal opening between two tracked hands" width="720">
 </p>
